@@ -105,6 +105,7 @@ export const writeFileTool: Tool<WriteFileArgs> = {
       }
     }
 
+    await ctx.undo?.capture(absolute);
     await fs.writeFile(absolute, args.content, "utf8");
     return `${exists ? "Overwrote" : "Created"} ${rel} (${bytes} bytes)`;
   },

@@ -46,7 +46,11 @@ issues, ~213k stars, 20k+ commits).
 3. ~~**Session persistence**~~ — done: per-workspace JSON in the config dir
    (`src/config/sessions.ts`), one struct (history + provider + model + mode),
    auto-save each turn, resume on start, `/new` and `--fresh` reset.
-4. **`/undo` via git** — before write batches, record a snapshot when in a repo.
+4. ~~**`/undo` via git**~~ — done: `src/safety/undo.ts` — before every
+   `write_file` the original file state is captured per turn (batch), stored
+   in the config dir (never in the project), git HEAD recorded per batch.
+   `/undo` restores the newest batch; head-moved warning when the repo
+   advanced. One-shot runs snapshot too, so `lazorik` + `/undo` reverts them.
 5. **Streaming responses** — with chunk timeouts and cancel handling from day one.
 6. **MCP tools** — only after the permission model is proven; validate origins.
 7. **TUI** — last; the REPL loop is the contract the TUI will wrap.

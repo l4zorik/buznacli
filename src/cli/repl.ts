@@ -26,6 +26,7 @@ import {
   createInteractiveConfirmer,
 } from "../safety/confirm.js";
 import { IgnoreMatcher } from "../safety/gitignore.js";
+import { UndoStack } from "../safety/undo.js";
 import { createDefaultRegistry, type ToolContext } from "../tools/index.js";
 import type { Message } from "../types.js";
 import { commandDoctor } from "./doctor.js";
@@ -39,6 +40,7 @@ const VERSION = "0.1.0";
 const HELP_COMMANDS = `Commands:
   /help          show this help
   /mode [plan|code]  show or switch mode (plan = read-only)
+  /undo          revert the agent's last write batch (git-aware)
   /models        list free model catalog
   /new           clear conversation history (and the saved session)
   /doctor        run diagnostics for this workspace
@@ -175,11 +177,13 @@ export async function commandRepl(argv: string[]): Promise<number> {
 
   const ignore = await IgnoreMatcher.fromWorkspace(root);
   const autoApprove = values.yes === true || settings.autoApprove;
+  const undo = new UndoStack(root);
   const ctx: ToolContext = {
     root,
     confirmer: autoApprove ? autoApproveConfirmer : createInteractiveConfirmer(),
     ignore,
     allowedCommands: settings.allowedCommands,
+    undo,
   };
   const allTools = createDefaultRegistry();
   const promptForMode = async (m: AgentMode): Promise<string> =>
@@ -245,7 +249,31 @@ export async function commandRepl(argv: string[]): Promise<number> {
     if (lowered === "/new") {
       history = [];
       deleteSession(root);
-      console.log(dim("History cleared (saved session removed)."));
+      await undo.clear();
+      console.log(dim("History cleared (saved session and snapshots removed)."));
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/undo") {
+      const summary = await undo.undoLast();
+      if (!summary) {
+        console.log(dim("Nothing to undo."));
+        rl.prompt();
+        continue;
+      }
+      for (const file of summary.restored) {
+        console.log(green(`restored ${file}`));
+      }
+      for (const file of summary.removed) {
+        console.log(green(`removed created file ${file}`));
+      }
+      if (summary.gitHeadChanged) {
+        console.log(
+          yellow(
+            "warning: HEAD moved since the snapshot — workspace also has git history to fall back on",
+          ),
+        );
+      }
       rl.prompt();
       continue;
     }
@@ -296,6 +324,14 @@ export async function commandRepl(argv: string[]): Promise<number> {
     });
     history = result.messages;
     persist();
+    const sealed = await undo.sealBatch();
+    if (sealed) {
+      console.error(
+        dim(
+          `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} — /undo reverts this turn)`,
+        ),
+      );
+    }
     if (result.status === "limit_reached") {
       console.error(
         yellow(`(step limit ${maxSteps} reached — continue or /new)`),

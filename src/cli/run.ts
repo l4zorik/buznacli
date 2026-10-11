@@ -8,6 +8,7 @@ import { apiKeySource } from "../config/credentials.js";
 import { CliError } from "../errors.js";
 import { createProvider, DEFAULT_MODELS } from "../providers/index.js";
 import { IgnoreMatcher } from "../safety/gitignore.js";
+import { UndoStack } from "../safety/undo.js";
 import {
   autoApproveConfirmer,
   createInteractiveConfirmer,
@@ -125,11 +126,13 @@ export async function commandRun(
 
   const ignore = await IgnoreMatcher.fromWorkspace(root);
   const autoApprove = values.yes === true || settings.autoApprove;
+  const undo = new UndoStack(root);
   const ctx: ToolContext = {
     root,
     confirmer: autoApprove ? autoApproveConfirmer : createInteractiveConfirmer(),
     ignore,
     allowedCommands: settings.allowedCommands,
+    undo,
   };
 
   const quiet = values.quiet === true;
@@ -154,6 +157,14 @@ export async function commandRun(
 
   if (quiet || result.text === "") {
     io.out(result.text);
+  }
+  const sealed = await undo.sealBatch();
+  if (sealed && !quiet) {
+    io.err(
+      dim(
+        `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} saved — run \`lazorik\` here and /undo to revert)`,
+      ),
+    );
   }
   io.err(
     result.status === "done"

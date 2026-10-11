@@ -2,12 +2,15 @@ import type { JsonSchema, ToolDefinition } from "../types.js";
 import { ToolNotFoundError } from "../errors.js";
 import type { Confirmer } from "../safety/confirm.js";
 import type { IgnoreMatcher } from "../safety/gitignore.js";
+import type { UndoRecorder } from "../safety/undo.js";
 
 export interface ToolContext {
   root: string;
   confirmer: Confirmer;
   ignore: IgnoreMatcher;
   allowedCommands: readonly string[];
+  /** Optional: snapshots original files before writes so /undo can revert them. */
+  undo?: UndoRecorder;
   log?: (line: string) => void;
 }
 

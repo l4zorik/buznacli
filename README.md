@@ -46,7 +46,19 @@ lazorik config --mode plan       # výchozí režim sezení
 lazorik doctor                   # diagnostika
 ```
 
-V REPLu: `/help`, `/mode [plan|code]`, `/models`, `/new`, `/doctor`, `/exit`.
+V REPLu: `/help`, `/mode [plan|code]`, `/undo`, `/models`, `/new`, `/doctor`,
+`/exit`.
+
+## /undo
+
+Před každým `write_file` agenta se zachytí původní stav souboru (jedna
+šarže = jeden turn). Snapshoty žijí v uživatelské konfiguraci (mimo
+projekt), každá si pamatuje git HEAD:
+
+- `/undo` vrátí poslední šarži — přepisované soubory obnoví, nově vytvořené smaže
+- upozorní, když se HEAD od snapshotu pohnul (v repu pak stejně funguje `git restore`)
+- one-shot `lazorik run` taky snapshotuje — později v `lazorik` stačí `/undo`
+- `/new` stack vyčistí; cap 20 šarží per-workspace
 
 ## Session persistence
 

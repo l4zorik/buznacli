@@ -80,7 +80,7 @@ export function renderHeader(info: HeaderInfo): string {
   }
   lines.push(
     `  ${dim(
-      "/help  /mode plan|code  /models  /new  /doctor  /exit  ·  ctrl+d quits",
+      "/help  /mode plan|code  /undo  /models  /new  /doctor  /exit  ·  ctrl+d quits",
     )}`,
     "",
   );

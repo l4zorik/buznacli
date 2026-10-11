@@ -23,7 +23,8 @@ Node 20+, TypeScript strict, ESM, Vitest. No runtime dependencies (only Node bui
 - `src/providers/` — openai / anthropic / openrouter / zen adapters
   (zen = OpenCode Zen gateway, free `opencode/mimo-v2.6-flash-free`)
 - `src/models.ts` — curated model catalog (free Zen + OpenRouter tiers)
-- `src/safety/` — path guard, gitignore matcher, command allowlist, confirm
+- `src/safety/` — path guard, gitignore matcher, command allowlist, confirm,
+  undo stack (file snapshots per turn, config-dir storage, git HEAD recorded)
 - `src/tools/` — registry + list/read/write/exec/git_diff tools
 - `tests/` — Vitest unit + e2e (mock provider) tests
 
@@ -46,3 +47,6 @@ Node 20+, TypeScript strict, ESM, Vitest. No runtime dependencies (only Node bui
    `PLAN_MODE_TOOLS` in `src/agent/modes.ts`.
 7. Follow `docs/LESSONS-OPENCODE.md` — it maps upstream opencode mistakes to
    our practices. Do not reintroduce a fixed mistake.
+8. Undo snapshots stay outside projects (config dir) and every restore path
+   goes through `resolveWithinRoot` — `/undo` must never touch paths
+   outside the workspace root.
