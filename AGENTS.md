@@ -18,7 +18,8 @@ Node 20+, TypeScript strict, ESM, Vitest. No runtime dependencies (only Node bui
 - `src/agent/` — agent loop, system prompt (base + user rules + AGENTS.md + mode)
 - `src/cli/` — commands: run, repl, init, models, rules, setup, config, doctor
   (`ui.ts` ANSI styling + opencode-style header, `spinner.ts` activity
-  feedback, `fileRefs.ts` @-references — no runtime deps)
+  feedback, `picker.ts` interactive fuzzy list picker — model selector,
+  `fileRefs.ts` @-references — no runtime deps)
 - `src/config/` — settings store, API credentials, user rules.md, per-workspace
   session persistence (all outside projects)
 - `src/providers/` — openai / anthropic / openrouter / zen adapters

@@ -13,8 +13,14 @@ import {
 } from "../agent/modes.js";
 import { credentialsPath, saveCredential } from "../config/credentials.js";
 import { deleteSession, loadSession, saveSession, sessionId } from "../config/sessions.js";
-import { configDir, loadSettings } from "../config/store.js";
+import {
+  configDir,
+  loadSettings,
+  saveSettings,
+  type AgentSettings,
+} from "../config/store.js";
 import { CliError } from "../errors.js";
+import { MODEL_CATALOG, findModel, type ModelInfo } from "../models.js";
 import { createProvider, DEFAULT_MODELS } from "../providers/index.js";
 import type { ProviderName } from "../types.js";
 import {
@@ -24,16 +30,18 @@ import {
 import { IgnoreMatcher } from "../safety/gitignore.js";
 import { UndoStack } from "../safety/undo.js";
 import { createDefaultRegistry, type ToolContext } from "../tools/index.js";
-import type { Message } from "../types.js";
+import type { Message, Provider } from "../types.js";
 import { commandDoctor } from "./doctor.js";
 import { expandFileRefs } from "./fileRefs.js";
 import { commandInit } from "./init.js";
 import { commandModels } from "./models.js";
+import { pickOption } from "./picker.js";
 import { commandRules } from "./rules.js";
 import { question, readSecret, commandSetup } from "./setup.js";
 import { formatEvent } from "./run.js";
 import { Spinner } from "./spinner.js";
 import {
+  bold,
   dim,
   green,
   red,
@@ -50,7 +58,9 @@ const HELP_COMMANDS = `Commands:
   /mode [plan|code]  show or switch mode (plan = read-only)
   /undo            revert the agent's last write batch (git-aware)
   /redo            re-apply what /undo reverted
-  /models          list free model catalog
+  /models          interactive model picker (↑/↓, type to filter)
+  /models list     plain model catalog listing
+  /sessions        list saved sessions
   /new             clear history, session and snapshots
   /details         toggle tool execution details
   /init            create or update AGENTS.md for this project
@@ -180,9 +190,10 @@ export async function commandRepl(argv: string[]): Promise<number> {
 
   const root = path.resolve(values.root ?? process.cwd());
   const { settings } = loadSettings();
-  const providerName = (values.provider ?? settings.provider) as ProviderName;
-  const model = values.model ?? settings.models[providerName];
-  const effectiveModel = model ?? DEFAULT_MODELS[providerName];
+  let currentSettings: AgentSettings = settings;
+  let providerName = (values.provider ?? settings.provider) as ProviderName;
+  let model = values.model ?? settings.models[providerName];
+  let effectiveModel = model ?? DEFAULT_MODELS[providerName];
   const maxSteps = values["max-steps"]
     ? Number.parseInt(values["max-steps"], 10)
     : settings.maxSteps;
@@ -197,7 +208,7 @@ export async function commandRepl(argv: string[]): Promise<number> {
   let mode: AgentMode =
     values.mode !== undefined && isAgentMode(values.mode) ? values.mode : settings.mode;
 
-  let provider;
+  let provider: Provider;
   try {
     provider = createProvider({
       provider: providerName,
@@ -219,6 +230,38 @@ export async function commandRepl(argv: string[]): Promise<number> {
       ...(model ? { model } : {}),
     });
   }
+
+  const recreateProvider = (nextProvider: ProviderName, nextModel: string): boolean => {
+    try {
+      provider = createProvider({ provider: nextProvider, model: nextModel });
+      return true;
+    } catch (error) {
+      const missingKey =
+        error instanceof CliError && error.message.includes("No API key");
+      if (!missingKey) {
+        throw error;
+      }
+      console.error(dim((error as Error).message));
+      return false;
+    }
+  };
+
+  const applyModelChoice = async (info: ModelInfo): Promise<boolean> => {
+    if (!recreateProvider(info.provider, info.id)) {
+      const proceed = await promptForKey(info.provider);
+      if (!proceed || !recreateProvider(info.provider, info.id)) {
+        return false;
+      }
+    }
+    providerName = info.provider;
+    model = info.id;
+    effectiveModel = info.id;
+    currentSettings = structuredClone(currentSettings);
+    currentSettings.provider = info.provider;
+    currentSettings.models[info.provider] = info.id;
+    saveSettings(currentSettings);
+    return true;
+  };
 
   const resume = values.fresh !== true;
   const saved = resume ? loadSession(root) : undefined;
@@ -278,7 +321,7 @@ export async function commandRepl(argv: string[]): Promise<number> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: renderPrompt(mode),
+    prompt: renderPrompt(mode, effectiveModel),
   });
   rl.on("SIGINT", () => {
     console.error(`\n${dim("(SIGINT — use /exit to quit)")}`);
@@ -454,8 +497,83 @@ export async function commandRepl(argv: string[]): Promise<number> {
       rl.prompt();
       continue;
     }
-    if (lowered === "/models") {
-      await commandModels([]);
+    if (lowered === "/models" || lowered.startsWith("/models ")) {
+      const arg = input.slice("/models".length).trim().toLowerCase();
+      if (arg === "list" || arg === "--list") {
+        await commandModels([]);
+        rl.prompt();
+        continue;
+      }
+      rl.pause();
+      const options = MODEL_CATALOG.map((m) => ({
+        label: m.id,
+        hint: `${m.provider} · ${m.contextK}K · ${m.note}`,
+        badge: m.free ? "FREE" : undefined,
+        value: m,
+      }));
+      const result = await pickOption<ModelInfo>(
+        `Select model  (current: ${providerName}/${effectiveModel})`,
+        options,
+        { current: effectiveModel },
+      );
+      rl.resume();
+      if (result) {
+        const applied = await applyModelChoice(result.value);
+        if (applied) {
+          persist();
+          rl.setPrompt(renderPrompt(mode, effectiveModel));
+          console.log(
+            green(`→ ${providerName}/${effectiveModel}`) +
+              dim(" saved as default"),
+          );
+        } else {
+          console.log(yellow("model unchanged"));
+        }
+      }
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/sessions") {
+      const sessionsRoot = path.join(configDir(), "sessions");
+      if (!fs.existsSync(sessionsRoot)) {
+        console.log(dim("no saved sessions yet"));
+      } else {
+        const files = fs
+          .readdirSync(sessionsRoot)
+          .filter((f) => f.endsWith(".json"));
+        if (files.length === 0) {
+          console.log(dim("no saved sessions yet"));
+        } else {
+          console.log(bold("Saved sessions:"));
+          for (const file of files) {
+            try {
+              const parsed = JSON.parse(
+                fs.readFileSync(path.join(sessionsRoot, file), "utf8"),
+              ) as {
+                root?: string;
+                model?: string;
+                provider?: string;
+                mode?: string;
+                history?: unknown[];
+                updatedAt?: string;
+              };
+              const msgs = Array.isArray(parsed.history) ? parsed.history.length : 0;
+              const when = parsed.updatedAt
+                ? new Date(parsed.updatedAt).toLocaleString("cs-CZ")
+                : "?";
+              const here = path.resolve(parsed.root ?? "") === root ? green(" (this workspace)") : "";
+              console.log(
+                `  ${dim(when)}  ${parsed.root ?? "?"}${here}`,
+              );
+              console.log(
+                dim(`    ${parsed.provider ?? "?"}/${parsed.model ?? "?"} · ${parsed.mode ?? "?"} · ${msgs} messages`),
+              );
+            } catch {
+              console.log(dim(`  ${file} (unreadable)`));
+            }
+          }
+        }
+      }
       rl.prompt();
       continue;
     }
@@ -526,7 +644,7 @@ export async function commandRepl(argv: string[]): Promise<number> {
       } else if (isAgentMode(arg)) {
         mode = arg;
         system = await promptForMode(mode);
-        rl.setPrompt(renderPrompt(mode));
+        rl.setPrompt(renderPrompt(mode, effectiveModel));
         console.log(`Mode: ${mode}`);
       } else {
         console.log(`Unknown mode "${arg}". Use: plan | code`);

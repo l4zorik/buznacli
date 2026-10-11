@@ -55,13 +55,19 @@ V REPLu: `/help`, `/mode [plan|code]`, `/undo`, `/redo`, `/models`, `/new`,
 Interaktivní session má opencode-styl UI (bez závislostí, čisté ANSI):
 
 - **hlavička** — brand, model, režim, workspace, greeting
+- **statusline prompt** — `code·mimo-v2.6-flash-free > ` ukazuje režim i model
+- **interaktivní `/models`** — šipkami/j-k vybíráš z katalogu, piš pro
+  fuzzy filtrování, Enter potvrdí, Esc zruší; přepne provider/model
+  i v settings
 - **spinner** — animace + počet vteřin během myšlení a nástrojů (jen na TTY)
+- **streaming** — odpověď roste token po token, ne až na konci
 - **markdown-lite** — asistentské odpovědi s orámovanými bloky kódu,
   `inline code` a **tučně**
 - **`@soubor`** — fuzzy reference na soubor ve workspace; obsah se vloží
   do promptu (respektuje `.gitignore` i citlivé soubory)
 - **`!příkaz`** — spustí povolený shell příkaz (allowlist + potvrzení),
   výstup jde do kontextu konverzace
+- **`/sessions`** — vypíše uložené sessiony napříč workspaces
 - **`/editor`** — delší zprávy skládej v `$EDITOR` (na Windows notepad)
 - **`/export`** — uloží konverzaci do Markdownu v konfiguraci
 - **`/details`** — vypne/vypne detaily volání nástrojů

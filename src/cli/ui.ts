@@ -80,7 +80,7 @@ export function renderHeader(info: HeaderInfo): string {
   }
   lines.push(
     `  ${dim(
-      "/help  /mode plan|code  /undo  /redo  /models  /new  /exit  ·  ctrl+d quits",
+      "/help  /models (picker)  /mode plan|code  /undo  /redo  /sessions  /new  /exit",
     )}`,
     `  ${dim("@file inlines a file · !cmd runs an allowlisted command · /editor for long messages")}`,
     "",
@@ -88,8 +88,14 @@ export function renderHeader(info: HeaderInfo): string {
   return lines.join("\n");
 }
 
-export function renderPrompt(mode: string): string {
-  return mode === "plan" ? yellow("> ") : cyan("> ");
+export function renderPrompt(mode: string, model?: string): string {
+  const short = model ? model.split("/").pop() ?? model : undefined;
+  const tag =
+    mode === "plan"
+      ? yellow("plan")
+      : green("code");
+  const label = short ? `${tag}${dim("·")}${cyan(short)}` : tag;
+  return `${label} ${bold(">")} `;
 }
 
 function inlineFormat(text: string): string {
