@@ -21,6 +21,8 @@ import { dim, green, red } from "./ui.js";
 export interface RunCommandIo {
   out: (line: string) => void;
   err: (line: string) => void;
+  /** Raw write for streamed tokens (no trailing newline). */
+  outRaw?: (text: string) => void;
 }
 
 export function formatEvent(event: AgentEvent, io: RunCommandIo): void {
@@ -58,6 +60,7 @@ export async function commandRun(
   io: RunCommandIo = {
     out: (line) => console.log(line),
     err: (line) => console.error(line),
+    outRaw: (text) => process.stdout.write(text),
   },
 ): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -136,40 +139,72 @@ export async function commandRun(
   };
 
   const quiet = values.quiet === true;
-  const onEvent = quiet
+  const controller = new AbortController();
+  const onSigint = (): void => controller.abort(new Error("aborted"));
+  process.on("SIGINT", onSigint);
+  let streamed = false;
+  const outRaw = io.outRaw;
+  const onTextDelta =
+    quiet || !outRaw
+      ? undefined
+      : (delta: string): void => {
+          streamed = true;
+          outRaw(delta);
+        };
+  const baseOnEvent = quiet
     ? undefined
-    : (event: AgentEvent) => formatEvent(event, io);
+    : (event: AgentEvent): void => {
+        if (event.type === "assistant_text" && streamed) {
+          outRaw?.("\n");
+          return;
+        }
+        formatEvent(event, io);
+      };
+  const onEvent = quiet ? undefined : baseOnEvent;
 
   const keySource = apiKeySource(providerName);
   io.err(
     `provider=${provider.name} model=${model ?? DEFAULT_MODELS[providerName]} mode=${effectiveMode} root=${root} autoApprove=${autoApprove} key=${keySource}`,
   );
 
-  const result = await runAgentLoop(prompt, {
-    provider,
-    tools: resolveToolsForMode(createDefaultRegistry(), effectiveMode),
-    ctx,
-    system: await buildSystemPrompt(root, effectiveMode),
-    maxSteps,
-    maxTokens: settings.maxTokens,
-    ...(onEvent ? { onEvent } : {}),
-  });
+  try {
+    const result = await runAgentLoop(prompt, {
+      provider,
+      tools: resolveToolsForMode(createDefaultRegistry(), effectiveMode),
+      ctx,
+      system: await buildSystemPrompt(root, effectiveMode),
+      maxSteps,
+      maxTokens: settings.maxTokens,
+      ...(onEvent ? { onEvent } : {}),
+      ...(onTextDelta ? { onTextDelta } : {}),
+      signal: controller.signal,
+    });
 
-  if (quiet || result.text === "") {
-    io.out(result.text);
-  }
-  const sealed = await undo.sealBatch();
-  if (sealed && !quiet) {
+    if (quiet || (result.text === "" && !streamed)) {
+      io.out(result.text);
+    }
+    const sealed = await undo.sealBatch();
+    if (sealed && !quiet) {
+      io.err(
+        dim(
+          `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} saved — run \`lazorik\` here and /undo to revert)`,
+        ),
+      );
+    }
     io.err(
-      dim(
-        `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} saved — run \`lazorik\` here and /undo to revert)`,
-      ),
+      result.status === "done"
+        ? `\nDone in ${result.steps} step(s).`
+        : `\nStopped at step limit (${result.steps}).`,
     );
+    return result.status === "done" ? 0 : 1;
+  } catch (error) {
+    await undo.sealBatch();
+    if (controller.signal.aborted) {
+      io.err("\nCancelled. Writes so far are snapshot-guarded (lazorik + /undo).");
+      return 1;
+    }
+    throw error;
+  } finally {
+    process.off("SIGINT", onSigint);
   }
-  io.err(
-    result.status === "done"
-      ? `\nDone in ${result.steps} step(s).`
-      : `\nStopped at step limit (${result.steps}).`,
-  );
-  return result.status === "done" ? 0 : 1;
 }

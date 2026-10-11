@@ -288,6 +288,15 @@ export async function commandRepl(argv: string[]): Promise<number> {
 
   const runTurn = async (promptText: string): Promise<void> => {
     const startedAt = Date.now();
+    let streamed = false;
+    const controller = new AbortController();
+    const onSigint = (): void => controller.abort(new Error("aborted"));
+    process.on("SIGINT", onSigint);
+    const onTextDelta = (delta: string): void => {
+      spinner.clearLine();
+      streamed = true;
+      process.stdout.write(delta);
+    };
     const onEvent = (event: AgentEvent): void => {
       switch (event.type) {
         case "step":
@@ -295,7 +304,11 @@ export async function commandRepl(argv: string[]): Promise<number> {
           break;
         case "assistant_text":
           spinner.clearLine();
-          console.log(renderAssistantText(event.text));
+          if (streamed) {
+            process.stdout.write("\n");
+          } else {
+            console.log(renderAssistantText(event.text));
+          }
           break;
         case "tool_start":
           spinner.update(event.name);
@@ -328,31 +341,51 @@ export async function commandRepl(argv: string[]): Promise<number> {
       }
     };
 
-    const result = await runAgentLoop(promptText, {
-      provider,
-      tools: resolveToolsForMode(allTools, mode),
-      ctx,
-      system,
-      maxSteps,
-      maxTokens: settings.maxTokens,
-      history,
-      onEvent,
-    });
-    spinner.stop();
-    history = result.messages;
-    persist();
-    const sealed = await undo.sealBatch();
-    if (sealed) {
-      console.error(
-        dim(
-          `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} — /undo reverts this turn)`,
-        ),
-      );
-    }
-    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-    console.error(dim(`${result.steps} step(s) · ${elapsed}s`));
-    if (result.status === "limit_reached") {
-      console.error(yellow(`(step limit ${maxSteps} reached — continue or /new)`));
+    try {
+      const result = await runAgentLoop(promptText, {
+        provider,
+        tools: resolveToolsForMode(allTools, mode),
+        ctx,
+        system,
+        maxSteps,
+        maxTokens: settings.maxTokens,
+        history,
+        onEvent,
+        onTextDelta,
+        signal: controller.signal,
+      });
+      spinner.stop();
+      history = result.messages;
+      persist();
+      const sealed = await undo.sealBatch();
+      if (sealed) {
+        console.error(
+          dim(
+            `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} — /undo reverts this turn)`,
+          ),
+        );
+      }
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.error(dim(`${result.steps} step(s) · ${elapsed}s`));
+      if (result.status === "limit_reached") {
+        console.error(
+          yellow(`(step limit ${maxSteps} reached — continue or /new)`),
+        );
+      }
+    } catch (error) {
+      spinner.stop();
+      await undo.sealBatch();
+      if (controller.signal.aborted) {
+        console.error(
+          yellow(
+            "\n(přerušeno — zápisy z tohoto tahu máš snapshot-guardnuté, /undo je vrátí)",
+          ),
+        );
+      } else {
+        throw error;
+      }
+    } finally {
+      process.off("SIGINT", onSigint);
     }
   };
 

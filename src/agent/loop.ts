@@ -18,6 +18,10 @@ export interface AgentOptions {
   maxTokens?: number;
   history?: readonly Message[];
   onEvent?: (event: AgentEvent) => void;
+  /** Stream text deltas to the UI as the model produces them. */
+  onTextDelta?: (delta: string) => void;
+  /** Cancel the in-flight provider request (Ctrl+C wiring). */
+  signal?: AbortSignal;
 }
 
 export interface AgentResult {
@@ -57,6 +61,8 @@ export async function runAgentLoop(
       messages,
       tools: toolDefs,
       ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.onTextDelta ? { onText: options.onTextDelta } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
 
     if (turn.text) {

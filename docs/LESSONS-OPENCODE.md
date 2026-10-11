@@ -51,6 +51,13 @@ issues, ~213k stars, 20k+ commits).
    in the config dir (never in the project), git HEAD recorded per batch.
    `/undo` restores the newest batch; head-moved warning when the repo
    advanced. One-shot runs snapshot too, so `lazorik` + `/undo` reverts them.
-5. **Streaming responses** — with chunk timeouts and cancel handling from day one.
+5. ~~**Streaming responses**~~ — done: `streamSse` in `src/providers/http.ts`
+   with the lesson discipline baked in — one total cap (10 min) + a per-chunk
+   idle timeout (30 s), both in the transport so every provider inherits them;
+   external abort (Ctrl+C) forwarded with its reason and converted to plain
+   Errors. OpenAI-compatible and Anthropic adapters stream text deltas live;
+   tool-call argument streams are reassembled per index. `lazorik run` and the
+   REPL print tokens as they arrive and cancel cleanly (undo batch still
+   sealed on abort).
 6. **MCP tools** — only after the permission model is proven; validate origins.
 7. **TUI** — last; the REPL loop is the contract the TUI will wrap.

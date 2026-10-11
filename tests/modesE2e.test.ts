@@ -52,23 +52,54 @@ beforeAll(async () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
         tools?: Array<{ function?: { name?: string } }>;
         messages?: Array<Record<string, unknown>>;
+        stream?: boolean;
       };
       captured.push({
         tools: body.tools ?? [],
         messages: body.messages ?? [],
       });
       const hasToolResult = (body.messages ?? []).some((m) => m["role"] === "tool");
-      res.writeHead(200, { "content-type": "application/json" });
-      if (hasToolResult) {
-        res.end(openAiResponse());
-      } else {
-        res.end(
-          openAiResponse({
+      const payload = hasToolResult
+        ? openAiResponse()
+        : openAiResponse({
             name: "write_file",
             arguments: JSON.stringify({ path: "pwned.txt", content: "owned" }),
-          }),
+          });
+      if (body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const parsed = JSON.parse(payload) as {
+          choices: Array<{
+            finish_reason: string;
+            message: {
+              content?: string | null;
+              tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+            };
+          }>;
+        };
+        const choice = parsed.choices[0];
+        const delta: Record<string, unknown> = {};
+        if (choice?.message.content) {
+          delta["content"] = choice.message.content;
+        }
+        if (choice?.message.tool_calls) {
+          delta["tool_calls"] = choice.message.tool_calls.map((tc, index) => ({
+            index,
+            id: tc.id,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          }));
+        }
+        res.write(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: {}, finish_reason: choice?.finish_reason ?? "stop" }],
+          })}\n\n`,
         );
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
       }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(payload);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

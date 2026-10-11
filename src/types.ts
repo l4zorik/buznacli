@@ -35,6 +35,10 @@ export interface ChatRequest {
   messages: Message[];
   tools: ToolDefinition[];
   maxTokens?: number;
+  /** When set, the provider streams text deltas to this callback. */
+  onText?: (delta: string) => void;
+  /** External cancel — aborts the in-flight request. */
+  signal?: AbortSignal;
 }
 
 export type StopReason = "stop" | "tool_calls" | "max_tokens" | "unknown";

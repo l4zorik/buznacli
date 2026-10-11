@@ -6,7 +6,7 @@ import type {
   StopReason,
   ToolCall,
 } from "../types.js";
-import { postJson } from "./http.js";
+import { postJson, streamSse } from "./http.js";
 
 interface AnthropicResponse {
   content?: Array<{
@@ -17,6 +17,14 @@ interface AnthropicResponse {
     input?: unknown;
   }>;
   stop_reason?: string | null;
+}
+
+interface AnthropicStreamEvent {
+  type?: string;
+  index?: number;
+  message?: { stop_reason?: string | null };
+  delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
+  content_block?: { type?: string; id?: string; name?: string };
 }
 
 export interface AnthropicProviderOptions {
@@ -141,17 +149,116 @@ export function createAnthropicProvider(
         }));
       }
 
+      const headers = {
+        "x-api-key": options.apiKey,
+        "anthropic-version": version,
+      };
+
+      if (request.onText) {
+        return streamAnthropicMessages({
+          url: `${baseUrl}/v1/messages`,
+          headers,
+          body,
+          onText: request.onText,
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+      }
+
       const result = await postJson<AnthropicResponse>({
         url: `${baseUrl}/v1/messages`,
         providerLabel: "anthropic",
-        headers: {
-          "x-api-key": options.apiKey,
-          "anthropic-version": version,
-        },
+        headers,
         body,
+        ...(request.signal ? { signal: request.signal } : {}),
       });
 
       return parseAnthropicResponse(result);
     },
+  };
+}
+
+interface StreamAnthropicOptions {
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  onText: (delta: string) => void;
+  signal?: AbortSignal;
+}
+
+async function streamAnthropicMessages(
+  options: StreamAnthropicOptions,
+): Promise<AssistantTurn> {
+  let text = "";
+  let stopReason: string | null | undefined;
+  const blocks = new Map<number, { id: string; name: string; json: string; isTool: boolean }>();
+
+  await streamSse({
+    url: options.url,
+    providerLabel: "anthropic",
+    headers: options.headers,
+    body: options.body,
+    ...(options.signal ? { signal: options.signal } : {}),
+    onEvent: (data) => {
+      let event: AnthropicStreamEvent;
+      try {
+        event = JSON.parse(data) as AnthropicStreamEvent;
+      } catch {
+        return;
+      }
+      if (event.type === "content_block_start") {
+        blocks.set(event.index ?? 0, {
+          id: event.content_block?.id ?? "",
+          name: event.content_block?.name ?? "",
+          json: "",
+          isTool: event.content_block?.type === "tool_use",
+        });
+        return;
+      }
+      if (event.type === "content_block_delta") {
+        const delta = event.delta;
+        if (delta?.type === "text_delta" && delta.text) {
+          text += delta.text;
+          options.onText(delta.text);
+        } else if (delta?.type === "input_json_delta" && delta.partial_json) {
+          const block = blocks.get(event.index ?? 0);
+          if (block) {
+            block.json += delta.partial_json;
+          }
+        }
+        return;
+      }
+      if (event.type === "message_delta") {
+        stopReason = event.delta?.stop_reason ?? event.message?.stop_reason ?? stopReason;
+      }
+    },
+  });
+
+  const toolCalls: ToolCall[] = [...blocks.entries()]
+    .filter(([, block]) => block.isTool)
+    .sort(([a], [b]) => a - b)
+    .map(([index, block], i) => {
+      let args: Record<string, unknown> = {};
+      if (block.json.trim() !== "") {
+        try {
+          const parsed: unknown = JSON.parse(block.json);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          args = { _raw: block.json };
+        }
+      }
+      return {
+        id: block.id || `toolu_${index}_${i}`,
+        name: block.name || "unknown",
+        arguments: args,
+      };
+    });
+
+  return {
+    text,
+    toolCalls,
+    stopReason:
+      toolCalls.length > 0 ? "tool_calls" : mapStopReason(stopReason),
   };
 }

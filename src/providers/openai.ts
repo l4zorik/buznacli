@@ -7,7 +7,7 @@ import type {
   StopReason,
   ToolCall,
 } from "../types.js";
-import { postJson } from "./http.js";
+import { postJson, streamSse } from "./http.js";
 
 interface OpenAIChatCompletion {
   choices?: Array<{
@@ -20,6 +20,20 @@ interface OpenAIChatCompletion {
           name?: string;
           arguments?: string;
         };
+      }>;
+    };
+  }>;
+}
+
+interface OpenAIStreamChunk {
+  choices?: Array<{
+    finish_reason?: string | null;
+    delta?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
       }>;
     };
   }>;
@@ -148,14 +162,28 @@ export function createOpenAIProvider(
         body["max_tokens"] = request.maxTokens;
       }
 
+      const headers = {
+        authorization: `Bearer ${options.apiKey}`,
+        ...(options.extraHeaders ?? {}),
+      };
+
+      if (request.onText) {
+        return streamOpenAIChat({
+          url: `${baseUrl}/chat/completions`,
+          providerLabel: providerName,
+          headers,
+          body,
+          onText: request.onText,
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+      }
+
       const result = await postJson<OpenAIChatCompletion>({
         url: `${baseUrl}/chat/completions`,
         providerLabel: providerName,
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          ...(options.extraHeaders ?? {}),
-        },
+        headers,
         body,
+        ...(request.signal ? { signal: request.signal } : {}),
       });
 
       const choice = result.choices?.[0];
@@ -169,5 +197,88 @@ export function createOpenAIProvider(
             : mapStopReason(choice?.finish_reason),
       };
     },
+  };
+}
+
+interface StreamOpenAIOptions {
+  url: string;
+  providerLabel: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  onText: (delta: string) => void;
+  signal?: AbortSignal;
+}
+
+async function streamOpenAIChat(
+  options: StreamOpenAIOptions,
+): Promise<AssistantTurn> {
+  let text = "";
+  let finish: string | null | undefined;
+  const calls = new Map<number, { id: string; name: string; args: string }>();
+
+  await streamSse({
+    url: options.url,
+    providerLabel: options.providerLabel,
+    headers: options.headers,
+    body: options.body,
+    ...(options.signal ? { signal: options.signal } : {}),
+    onEvent: (data) => {
+      let chunk: OpenAIStreamChunk;
+      try {
+        chunk = JSON.parse(data) as OpenAIStreamChunk;
+      } catch {
+        return;
+      }
+      const choice = chunk.choices?.[0];
+      if (choice?.finish_reason) {
+        finish = choice.finish_reason;
+      }
+      const delta = choice?.delta;
+      if (delta?.content) {
+        text += delta.content;
+        options.onText(delta.content);
+      }
+      for (const tc of delta?.tool_calls ?? []) {
+        const index = tc.index ?? 0;
+        const entry = calls.get(index) ?? { id: "", name: "", args: "" };
+        if (tc.id) {
+          entry.id = tc.id;
+        }
+        if (tc.function?.name) {
+          entry.name += tc.function.name;
+        }
+        if (tc.function?.arguments) {
+          entry.args += tc.function.arguments;
+        }
+        calls.set(index, entry);
+      }
+    },
+  });
+
+  const toolCalls: ToolCall[] = [...calls.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([index, entry], i) => {
+      let args: Record<string, unknown> = {};
+      if (entry.args.trim() !== "") {
+        try {
+          const parsed: unknown = JSON.parse(entry.args);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          args = { _raw: entry.args };
+        }
+      }
+      return {
+        id: entry.id || `call_${index}_${i}`,
+        name: entry.name || "unknown",
+        arguments: args,
+      };
+    });
+
+  return {
+    text,
+    toolCalls,
+    stopReason: toolCalls.length > 0 ? "tool_calls" : mapStopReason(finish),
   };
 }

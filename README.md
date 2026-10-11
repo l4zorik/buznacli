@@ -67,6 +67,17 @@ Interaktivní session má opencode-styl UI (bez závislostí, čisté ANSI):
 - **`/details`** — vypne/vypne detaily volání nástrojů
 - **`/init`, `/rules`, `/connect`** — ekvivalenty příkazů z CLI
 
+## Streaming
+
+Odpovědi modelu se tisknou průběžně (token po tokenu), ne až na konci.
+Transport (`src/providers/http.ts`) hlídá podle lekcí z opencode:
+
+- **celkový timeout** streamu (10 minut) + **idle timeout** (30 s bez chunku)
+- **Ctrl+C** zruší probíhající volání čistě — snapshoty pro `/undo` se
+  stejně uzavřou, takže přerušený tah jde vrátit
+- oba adaptér (OpenAI-kompatibilní i Anthropic) umí streamovat včetně
+  skládání `tool_calls` z dílčích argument-chunků
+
 ## /undo
 
 Před každým `write_file` agenta se zachytí původní stav souboru (jedna
