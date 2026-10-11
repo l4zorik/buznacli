@@ -33,7 +33,7 @@ export async function commandModels(
       [
         "Usage: lazorik models [options]",
         "",
-        "Lists the curated model catalog (OpenRouter free tier + MiMo).",
+        "Lists the curated model catalog (OpenCode Zen + OpenRouter free tiers).",
         "",
         "Options:",
         "  --free             Show only free models",
@@ -78,7 +78,7 @@ export async function commandModels(
 
   io.out(
     freeOnly
-      ? "Free models (OpenRouter, $0 in / $0 out):"
+      ? "Free models (OpenCode Zen + OpenRouter, $0 in / $0 out):"
       : "Model catalog (★ = current default for your provider):",
   );
   io.out("");
