@@ -1,13 +1,15 @@
 {
   "name": "lazorikcode",
   "version": "0.1.0",
-  "description": "lazorikcode — open source CLI kódovací agent pro terminál (OpenAI, Anthropic, OpenRouter)",
+  "description": "lazorikcode — open source CLI kódovací agent pro terminál (OpenAI, Anthropic, OpenRouter, OpenCode Zen)",
   "keywords": [
     "ai",
     "coding-agent",
     "cli",
     "llm",
-    "agent"
+    "agent",
+    "zen",
+    "openrouter"
   ],
   "type": "module",
   "license": "MIT",
