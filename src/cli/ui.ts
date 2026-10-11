@@ -80,8 +80,9 @@ export function renderHeader(info: HeaderInfo): string {
   }
   lines.push(
     `  ${dim(
-      "/help  /mode plan|code  /undo  /models  /new  /doctor  /exit  ·  ctrl+d quits",
+      "/help  /mode plan|code  /undo  /redo  /models  /new  /exit  ·  ctrl+d quits",
     )}`,
+    `  ${dim("@file inlines a file · !cmd runs an allowlisted command · /editor for long messages")}`,
     "",
   );
   return lines.join("\n");
@@ -89,4 +90,48 @@ export function renderHeader(info: HeaderInfo): string {
 
 export function renderPrompt(mode: string): string {
   return mode === "plan" ? yellow("> ") : cyan("> ");
+}
+
+function inlineFormat(text: string): string {
+  return text
+    .replace(/`([^`]+)`/g, (_m, code: string) => cyan(code))
+    .replace(/\*\*([^*]+)\*\*/g, (_m, strong: string) => bold(strong));
+}
+
+/**
+ * Markdown-lite rendering for assistant output in a plain terminal:
+ * fenced code blocks get a dim frame, headers go bold, inline `code` and
+ * **bold** are styled. Anything else passes through unchanged.
+ */
+export function renderAssistantText(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let inCode = false;
+  for (const line of lines) {
+    const fence = line.match(/^```(\w+)?\s*$/);
+    if (fence) {
+      if (!inCode) {
+        inCode = true;
+        const lang = fence[1] ? ` ${fence[1]}` : "";
+        out.push(dim(`  ┌─${lang}`));
+      } else {
+        inCode = false;
+        out.push(dim("  └─"));
+      }
+      continue;
+    }
+    if (inCode) {
+      out.push(`  ${dim("│")} ${line}`);
+      continue;
+    }
+    if (/^#{1,6}\s/.test(line)) {
+      out.push(bold(inlineFormat(line.replace(/^#{1,6}\s/, ""))));
+      continue;
+    }
+    out.push(inlineFormat(line));
+  }
+  if (inCode) {
+    out.push(dim("  └─"));
+  }
+  return out.join("\n");
 }

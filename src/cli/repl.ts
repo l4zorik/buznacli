@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { parseArgs } from "node:util";
@@ -8,16 +11,9 @@ import {
   resolveToolsForMode,
   type AgentMode,
 } from "../agent/modes.js";
-import {
-  credentialsPath,
-  saveCredential,
-} from "../config/credentials.js";
-import {
-  deleteSession,
-  loadSession,
-  saveSession,
-} from "../config/sessions.js";
-import { loadSettings } from "../config/store.js";
+import { credentialsPath, saveCredential } from "../config/credentials.js";
+import { deleteSession, loadSession, saveSession, sessionId } from "../config/sessions.js";
+import { configDir, loadSettings } from "../config/store.js";
 import { CliError } from "../errors.js";
 import { createProvider, DEFAULT_MODELS } from "../providers/index.js";
 import type { ProviderName } from "../types.js";
@@ -30,21 +26,44 @@ import { UndoStack } from "../safety/undo.js";
 import { createDefaultRegistry, type ToolContext } from "../tools/index.js";
 import type { Message } from "../types.js";
 import { commandDoctor } from "./doctor.js";
+import { expandFileRefs } from "./fileRefs.js";
+import { commandInit } from "./init.js";
 import { commandModels } from "./models.js";
+import { commandRules } from "./rules.js";
 import { question, readSecret, commandSetup } from "./setup.js";
 import { formatEvent } from "./run.js";
-import { dim, green, red, renderHeader, renderPrompt, yellow } from "./ui.js";
+import { Spinner } from "./spinner.js";
+import {
+  dim,
+  green,
+  red,
+  renderAssistantText,
+  renderHeader,
+  renderPrompt,
+  yellow,
+} from "./ui.js";
 
 const VERSION = "0.1.0";
 
 const HELP_COMMANDS = `Commands:
-  /help          show this help
+  /help            show this help
   /mode [plan|code]  show or switch mode (plan = read-only)
-  /undo          revert the agent's last write batch (git-aware)
-  /models        list free model catalog
-  /new           clear conversation history (and the saved session)
-  /doctor        run diagnostics for this workspace
-  /exit          quit (also: exit, quit, q, Ctrl+D)
+  /undo            revert the agent's last write batch (git-aware)
+  /redo            re-apply what /undo reverted
+  /models          list free model catalog
+  /new             clear history, session and snapshots
+  /details         toggle tool execution details
+  /init            create or update AGENTS.md for this project
+  /rules           show your personal rules.md
+  /connect         add/change the API key for the current provider
+  /export          export the conversation to Markdown
+  /editor          compose a message in $EDITOR
+  /doctor          run diagnostics for this workspace
+  /exit            quit (also: exit, quit, q, Ctrl+D)
+
+Shortcuts in messages:
+  @path/to/file    inline a workspace file (fuzzy match, gitignore-aware)
+  !git status      run an allowlisted shell command (with confirmation)
 `;
 
 const PROVIDER_LABELS: Record<ProviderName, string> = {
@@ -79,11 +98,41 @@ async function promptForKey(providerName: ProviderName): Promise<boolean> {
   }
   const savedTo = saveCredential(providerName, key);
   console.log(
-    green(
-      `Saved ${label} key to ${savedTo} (permissions 600 where supported).`,
-    ),
+    green(`Saved ${label} key to ${savedTo} (permissions 600 where supported).`),
   );
   return true;
+}
+
+function exportConversation(history: Message[], root: string): string {
+  const parts: string[] = [
+    `# lazorik session`,
+    ``,
+    `Workspace: ${root}`,
+    `Exported: ${new Date().toISOString()}`,
+    ``,
+  ];
+  for (const message of history) {
+    if (message.role === "user") {
+      parts.push(`## You`, ``, message.content, ``);
+      continue;
+    }
+    if (message.role === "assistant") {
+      parts.push(`## lazorik`, ``, message.content || "_(no text)_", ``);
+      for (const call of message.toolCalls ?? []) {
+        parts.push(`- tool call: \`${call.name}\``, ``);
+      }
+      continue;
+    }
+    const preview =
+      message.content.length > 400
+        ? `${message.content.slice(0, 400)}…`
+        : message.content;
+    parts.push(`> ${message.name}: ${preview.replace(/\n/g, "\n> ")}`, ``);
+  }
+  const file = path.join(configDir(), `session-${sessionId(root)}.md`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${parts.join("\n")}\n`, "utf8");
+  return file;
 }
 
 export async function commandRepl(argv: string[]): Promise<number> {
@@ -189,6 +238,7 @@ export async function commandRepl(argv: string[]): Promise<number> {
   const promptForMode = async (m: AgentMode): Promise<string> =>
     buildSystemPrompt(root, m);
   let system = await promptForMode(mode);
+  let details = true;
 
   const persist = (): void => {
     if (history.length === 0) {
@@ -220,7 +270,7 @@ export async function commandRepl(argv: string[]): Promise<number> {
     `  ${dim(
       `autoApprove: ${autoApprove} · AGENTS.md: ${
         system.includes("Project instructions") ? "loaded" : "not found"
-      } · session: saved automatically`,
+      } · session saved automatically`,
     )}`,
   );
   console.log("");
@@ -234,9 +284,81 @@ export async function commandRepl(argv: string[]): Promise<number> {
     console.error(`\n${dim("(SIGINT — use /exit to quit)")}`);
   });
 
+  const spinner = new Spinner();
+
+  const runTurn = async (promptText: string): Promise<void> => {
+    const startedAt = Date.now();
+    const onEvent = (event: AgentEvent): void => {
+      switch (event.type) {
+        case "step":
+          spinner.start("thinking");
+          break;
+        case "assistant_text":
+          spinner.clearLine();
+          console.log(renderAssistantText(event.text));
+          break;
+        case "tool_start":
+          spinner.update(event.name);
+          if (details) {
+            formatEvent(event, {
+              out: (l) => console.log(l),
+              err: (l) => console.error(l),
+            });
+          }
+          break;
+        case "tool_end":
+          spinner.update(`${event.name} done`);
+          if (details) {
+            formatEvent(event, {
+              out: (l) => console.log(l),
+              err: (l) => console.error(l),
+            });
+          }
+          break;
+        case "limit_reached":
+          spinner.stop();
+          formatEvent(event, {
+            out: (l) => console.log(l),
+            err: (l) => console.error(l),
+          });
+          break;
+        case "done":
+          spinner.stop();
+          break;
+      }
+    };
+
+    const result = await runAgentLoop(promptText, {
+      provider,
+      tools: resolveToolsForMode(allTools, mode),
+      ctx,
+      system,
+      maxSteps,
+      maxTokens: settings.maxTokens,
+      history,
+      onEvent,
+    });
+    spinner.stop();
+    history = result.messages;
+    persist();
+    const sealed = await undo.sealBatch();
+    if (sealed) {
+      console.error(
+        dim(
+          `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} — /undo reverts this turn)`,
+        ),
+      );
+    }
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.error(dim(`${result.steps} step(s) · ${elapsed}s`));
+    if (result.status === "limit_reached") {
+      console.error(yellow(`(step limit ${maxSteps} reached — continue or /new)`));
+    }
+  };
+
   rl.prompt();
   for await (const line of rl) {
-    const input = line.trim();
+    let input = line.trim();
     if (input === "") {
       rl.prompt();
       continue;
@@ -277,13 +399,85 @@ export async function commandRepl(argv: string[]): Promise<number> {
       rl.prompt();
       continue;
     }
-    if (lowered === "/doctor") {
-      await commandDoctor([root]);
+    if (lowered === "/redo") {
+      const summary = await undo.redoLast();
+      if (!summary) {
+        console.log(dim("Nothing to redo."));
+        rl.prompt();
+        continue;
+      }
+      for (const file of summary.restored) {
+        console.log(green(`re-applied ${file}`));
+      }
+      for (const file of summary.removed) {
+        console.log(green(`re-removed ${file}`));
+      }
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/details") {
+      details = !details;
+      console.log(`Tool details: ${details ? green("on") : dim("off")}`);
       rl.prompt();
       continue;
     }
     if (lowered === "/models") {
       await commandModels([]);
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/init") {
+      await commandInit([root]);
+      system = await promptForMode(mode);
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/rules") {
+      await commandRules([]);
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/connect") {
+      await commandSetup([]);
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/export") {
+      const file = exportConversation(history, root);
+      console.log(dim(`conversation exported to ${file}`));
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/editor") {
+      const editor =
+        process.env["EDITOR"]?.trim() ||
+        process.env["VISUAL"]?.trim() ||
+        (process.platform === "win32" ? "notepad" : "vi");
+      const tmp = path.join(os.tmpdir(), `lazorik-${Date.now()}.md`);
+      fs.writeFileSync(tmp, "", "utf8");
+      console.log(dim(`opening ${editor} — save and close to send, leave empty to cancel`));
+      const child = spawn(editor, [tmp], {
+        stdio: "inherit",
+        shell: true,
+        cwd: root,
+      });
+      await new Promise<void>((resolve) => {
+        child.on("exit", () => resolve());
+        child.on("error", () => resolve());
+      });
+      const content = fs.readFileSync(tmp, "utf8").trim();
+      fs.rmSync(tmp, { force: true });
+      if (content === "") {
+        console.log(dim("empty — nothing sent"));
+        rl.prompt();
+        continue;
+      }
+      await runTurn(content);
+      rl.prompt();
+      continue;
+    }
+    if (lowered === "/doctor") {
+      await commandDoctor([root]);
       rl.prompt();
       continue;
     }
@@ -308,35 +502,48 @@ export async function commandRepl(argv: string[]): Promise<number> {
       continue;
     }
 
-    const result = await runAgentLoop(input, {
-      provider,
-      tools: resolveToolsForMode(allTools, mode),
-      ctx,
-      system,
-      maxSteps,
-      maxTokens: settings.maxTokens,
-      history,
-      onEvent: (event: AgentEvent) =>
-        formatEvent(event, {
-          out: (l) => console.log(l),
-          err: (l) => console.error(l),
-        }),
-    });
-    history = result.messages;
-    persist();
-    const sealed = await undo.sealBatch();
-    if (sealed) {
-      console.error(
-        dim(
-          `(${sealed.files.length} file snapshot${sealed.files.length === 1 ? "" : "s"} — /undo reverts this turn)`,
-        ),
+    // !command — run an allowlisted shell command inline (opencode-style).
+    if (input.startsWith("!")) {
+      const command = input.slice(1).trim();
+      if (command === "") {
+        rl.prompt();
+        continue;
+      }
+      spinner.start(`$ ${command}`);
+      const result = await allTools.execute("run_command", { command }, ctx);
+      spinner.stop();
+      if (result.isError) {
+        console.error(red(result.output));
+      } else {
+        console.log(result.output);
+      }
+      history.push({
+        role: "user",
+        content: `Ran shell command: ${command}\nOutput:\n${result.output}`,
+      });
+      persist();
+      rl.prompt();
+      continue;
+    }
+
+    // @file references — inline workspace files into the prompt.
+    const refs = await expandFileRefs(input, root, ignore);
+    if (refs.resolved.length > 0) {
+      console.log(
+        dim(`inlined ${refs.resolved.map((r) => r.rel).join(", ")}`),
       );
     }
-    if (result.status === "limit_reached") {
-      console.error(
-        yellow(`(step limit ${maxSteps} reached — continue or /new)`),
+    for (const amb of refs.ambiguous) {
+      console.log(
+        yellow(`ambiguous @${amb.ref} — candidates: ${amb.candidates.join(", ")}`),
       );
     }
+    for (const miss of refs.unresolved) {
+      console.log(yellow(`no readable file for @${miss}`));
+    }
+    input = refs.prompt;
+
+    await runTurn(input);
     rl.prompt();
   }
 

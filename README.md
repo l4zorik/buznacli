@@ -46,8 +46,26 @@ lazorik config --mode plan       # výchozí režim sezení
 lazorik doctor                   # diagnostika
 ```
 
-V REPLu: `/help`, `/mode [plan|code]`, `/undo`, `/models`, `/new`, `/doctor`,
+V REPLu: `/help`, `/mode [plan|code]`, `/undo`, `/redo`, `/models`, `/new`,
+`/details`, `/init`, `/rules`, `/connect`, `/export`, `/editor`, `/doctor`,
 `/exit`.
+
+## REPL jako opencode
+
+Interaktivní session má opencode-styl UI (bez závislostí, čisté ANSI):
+
+- **hlavička** — brand, model, režim, workspace, greeting
+- **spinner** — animace + počet vteřin během myšlení a nástrojů (jen na TTY)
+- **markdown-lite** — asistentské odpovědi s orámovanými bloky kódu,
+  `inline code` a **tučně**
+- **`@soubor`** — fuzzy reference na soubor ve workspace; obsah se vloží
+  do promptu (respektuje `.gitignore` i citlivé soubory)
+- **`!příkaz`** — spustí povolený shell příkaz (allowlist + potvrzení),
+  výstup jde do kontextu konverzace
+- **`/editor`** — delší zprávy skládej v `$EDITOR` (na Windows notepad)
+- **`/export`** — uloží konverzaci do Markdownu v konfiguraci
+- **`/details`** — vypne/vypne detaily volání nástrojů
+- **`/init`, `/rules`, `/connect`** — ekvivalenty příkazů z CLI
 
 ## /undo
 
@@ -56,6 +74,7 @@ Před každým `write_file` agenta se zachytí původní stav souboru (jedna
 projekt), každá si pamatuje git HEAD:
 
 - `/undo` vrátí poslední šarži — přepisované soubory obnoví, nově vytvořené smaže
+- `/redo` vrátí to, co `/undo` vrátil (ping-pong mezi stavovými body)
 - upozorní, když se HEAD od snapshotu pohnul (v repu pak stejně funguje `git restore`)
 - one-shot `lazorik run` taky snapshotuje — později v `lazorik` stačí `/undo`
 - `/new` stack vyčistí; cap 20 šarží per-workspace
