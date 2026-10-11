@@ -1,0 +1,41 @@
+{
+  "name": "lazorikcode",
+  "version": "0.1.0",
+  "description": "lazorikcode — open source CLI kódovací agent pro terminál (OpenAI, Anthropic, OpenRouter)",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "llm",
+    "agent"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "lazorik": "./dist/index.js",
+    "lazorikcode": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.3"
+  }
+}
